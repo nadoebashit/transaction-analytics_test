@@ -7,7 +7,7 @@ from decimal import Decimal
 from typing import Optional
 
 from sqlalchemy import (
-    Boolean, Column, DateTime, Decimal as SQLDecimal, 
+    Boolean, Column, DateTime, 
     Enum, ForeignKey, Index, Integer, Numeric, String
 )
 from sqlalchemy.orm import relationship
