@@ -2,16 +2,16 @@
 API endpoints for transaction reports and analytics.
 """
 
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from decimal import Decimal
 from typing import Optional, List, Dict, Any
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import func, extract
 from sqlalchemy.orm import Session
 
 from app.database import get_db
 from app.models import Transaction, TransactionStatus, TransactionType
+from app.utils.analytics import TransactionAnalytics
 
 router = APIRouter(prefix="/report", tags=["reports"])
 
@@ -26,10 +26,12 @@ async def get_transaction_report(
     include_min: bool = Query(False, description="Include minimum amount"),
     include_max: bool = Query(False, description="Include maximum amount"),
     include_daily_shift: bool = Query(False, description="Include daily data with % change"),
+    include_monthly_comparison: bool = Query(False, description="Include monthly comparison"),
+    include_top_transactions: bool = Query(False, description="Include top 10 transactions"),
     db: Session = Depends(get_db)
 ) -> Dict[str, Any]:
     """
-    Generate transaction analytics report.
+    Generate comprehensive transaction analytics report.
     
     Args:
         start_date: Start date for filtering (optional)
@@ -40,10 +42,12 @@ async def get_transaction_report(
         include_min: Include minimum amount in response
         include_max: Include maximum amount in response
         include_daily_shift: Include daily breakdown with percentage changes
+        include_monthly_comparison: Include monthly comparison data
+        include_top_transactions: Include top 10 transactions by amount
         db: Database session
         
     Returns:
-        Dictionary with transaction analytics
+        Dictionary with comprehensive transaction analytics
     """
     try:
         # Parse dates
@@ -57,37 +61,20 @@ async def get_transaction_report(
         if parsed_start_date > parsed_end_date:
             raise HTTPException(status_code=400, detail="Start date cannot be after end date")
         
-        # Build base query
-        query = db.query(Transaction).filter(
-            Transaction.transaction_date >= parsed_start_date,
-            Transaction.transaction_date <= parsed_end_date
+        # Validate filters
+        if status not in ["all", "successful", "failed"]:
+            raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
+        
+        if type not in ["all", "payment", "invoice"]:
+            raise HTTPException(status_code=400, detail=f"Invalid type: {type}")
+        
+        # Initialize analytics
+        analytics = TransactionAnalytics(db)
+        
+        # Get comprehensive metrics
+        metrics = analytics.get_comprehensive_metrics(
+            parsed_start_date, parsed_end_date, status, type
         )
-        
-        # Apply status filter
-        if status != "all":
-            try:
-                status_enum = TransactionStatus(status.lower())
-                query = query.filter(Transaction.status == status_enum)
-            except ValueError:
-                raise HTTPException(status_code=400, detail=f"Invalid status: {status}")
-        
-        # Apply type filter
-        if type != "all":
-            try:
-                type_enum = TransactionType(type.lower())
-                query = query.filter(Transaction.type == type_enum)
-            except ValueError:
-                raise HTTPException(status_code=400, detail=f"Invalid type: {type}")
-        
-        # Calculate basic metrics
-        total_count = query.count()
-        
-        # Calculate total amount (only for successful transactions)
-        successful_query = query.filter(Transaction.status == TransactionStatus.SUCCESSFUL)
-        total_amount_result = successful_query.with_entities(
-            func.coalesce(func.sum(Transaction.amount), 0)
-        ).scalar()
-        total_amount = Decimal(str(total_amount_result))
         
         # Build response
         response = {
@@ -100,39 +87,84 @@ async def get_transaction_report(
                 "type": type
             },
             "metrics": {
-                "total_transactions": total_count,
-                "total_amount": float(total_amount)
+                "total_transactions": metrics["total_transactions"],
+                "total_amount": metrics["total_amount"],
+                "success_rate": metrics["success_rate"],
+                "successful_transactions": metrics["successful_transactions"],
+                "failed_transactions": metrics["failed_transactions"],
+                "type_breakdown": metrics["type_breakdown"]
             }
         }
         
         # Add optional metrics
-        if include_avg and total_count > 0:
-            avg_result = successful_query.with_entities(
-                func.coalesce(func.avg(Transaction.amount), 0)
-            ).scalar()
-            response["metrics"]["average_amount"] = float(avg_result)
+        if include_avg:
+            response["metrics"]["average_amount"] = metrics["average_amount"]
         
-        if include_min and total_count > 0:
-            min_result = successful_query.with_entities(
-                func.coalesce(func.min(Transaction.amount), 0)
-            ).scalar()
-            response["metrics"]["minimum_amount"] = float(min_result)
+        if include_min:
+            response["metrics"]["minimum_amount"] = metrics["minimum_amount"]
         
-        if include_max and total_count > 0:
-            max_result = successful_query.with_entities(
-                func.coalesce(func.max(Transaction.amount), 0)
-            ).scalar()
-            response["metrics"]["maximum_amount"] = float(max_result)
+        if include_max:
+            response["metrics"]["maximum_amount"] = metrics["maximum_amount"]
         
         # Add daily breakdown if requested
         if include_daily_shift:
-            daily_data = _get_daily_breakdown(db, parsed_start_date, parsed_end_date, status, type)
+            daily_data = analytics.get_daily_trends(parsed_start_date, parsed_end_date, status, type)
             response["daily_breakdown"] = daily_data
+        
+        # Add monthly comparison if requested
+        if include_monthly_comparison:
+            monthly_data = analytics.get_monthly_comparison(parsed_start_date, parsed_end_date, status, type)
+            response["monthly_comparison"] = monthly_data
+        
+        # Add top transactions if requested
+        if include_top_transactions:
+            top_transactions = analytics.get_top_transactions(parsed_start_date, parsed_end_date, 10, status, type)
+            response["top_transactions"] = top_transactions
         
         return response
         
     except HTTPException:
         raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
+
+
+@router.get("/summary")
+async def get_transaction_summary(
+    days: int = Query(30, description="Number of days to analyze", ge=1, le=365),
+    db: Session = Depends(get_db)
+) -> Dict[str, Any]:
+    """
+    Get quick transaction summary for the last N days.
+    
+    Args:
+        days: Number of days to look back
+        db: Database session
+        
+    Returns:
+        Dictionary with summary metrics
+    """
+    try:
+        end_date = date.today()
+        start_date = end_date - timedelta(days=days)
+        
+        analytics = TransactionAnalytics(db)
+        metrics = analytics.get_comprehensive_metrics(start_date, end_date)
+        
+        return {
+            "period": {
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "days": days
+            },
+            "summary": {
+                "total_transactions": metrics["total_transactions"],
+                "total_amount": metrics["total_amount"],
+                "success_rate": metrics["success_rate"],
+                "average_amount": metrics["average_amount"]
+            }
+        }
+        
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Internal server error: {str(e)}")
 
@@ -146,68 +178,3 @@ def _parse_date(date_str: Optional[str]) -> Optional[date]:
         return datetime.strptime(date_str, "%Y-%m-%d").date()
     except ValueError:
         raise HTTPException(status_code=400, detail=f"Invalid date format: {date_str}. Use YYYY-MM-DD")
-
-
-def _get_daily_breakdown(
-    db: Session, 
-    start_date: date, 
-    end_date: date, 
-    status: str, 
-    type: str
-) -> List[Dict[str, Any]]:
-    """
-    Get daily transaction breakdown with percentage changes.
-    
-    Args:
-        db: Database session
-        start_date: Start date
-        end_date: End date
-        status: Status filter
-        type: Type filter
-        
-    Returns:
-        List of daily breakdown data
-    """
-    # Build base query for daily data
-    query = db.query(
-        func.date(Transaction.transaction_date).label('date'),
-        func.count(Transaction.id).label('count'),
-        func.coalesce(func.sum(Transaction.amount), 0).label('total_amount')
-    ).filter(
-        Transaction.transaction_date >= start_date,
-        Transaction.transaction_date <= end_date,
-        Transaction.status == TransactionStatus.SUCCESSFUL
-    )
-    
-    # Apply filters
-    if status != "all":
-        query = query.filter(Transaction.status == TransactionStatus(status.lower()))
-    if type != "all":
-        query = query.filter(Transaction.type == TransactionType(type.lower()))
-    
-    # Group by date and order
-    daily_results = query.group_by(
-        func.date(Transaction.transaction_date)
-    ).order_by('date').all()
-    
-    # Convert to list and calculate percentage changes
-    daily_data = []
-    previous_amount = None
-    
-    for result in daily_results:
-        current_amount = float(result.total_amount)
-        percent_change = None
-        
-        if previous_amount is not None and previous_amount > 0:
-            percent_change = ((current_amount - previous_amount) / previous_amount) * 100
-        
-        daily_data.append({
-            "date": result.date.isoformat(),
-            "transaction_count": result.count,
-            "total_amount": current_amount,
-            "percent_change": round(percent_change, 2) if percent_change is not None else None
-        })
-        
-        previous_amount = current_amount
-    
-    return daily_data
