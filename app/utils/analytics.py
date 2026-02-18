@@ -332,8 +332,8 @@ class TransactionAnalytics:
                 "transaction_id": result.id,
                 "user_id": result.user_id,
                 "amount": float(result.amount),
-                "status": result.status.value,
-                "type": result.type.value,
+                "status": result.status,
+                "type": result.type,
                 "transaction_date": result.transaction_date.isoformat()
             })
         

@@ -58,3 +58,6 @@ docs/_build/
 # Temporary files
 *.tmp
 *.temp
+
+# Environment files (keep env but exclude .env)
+.env
