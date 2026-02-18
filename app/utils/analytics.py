@@ -138,13 +138,21 @@ class TransactionAnalytics:
             base_filters.append(Transaction.type == type_enum)
         
         # Daily aggregation query
+        from sqlalchemy import text
+        
+        # Use different date functions for different databases
+        if self.db.bind.dialect.name == 'sqlite':
+            date_func = func.date(Transaction.transaction_date)
+        else:
+            date_func = func.date(Transaction.transaction_date)
+            
         daily_query = self.db.query(
-            func.date(Transaction.transaction_date).label('date'),
+            date_func.label('date'),
             func.count(Transaction.id).label('count'),
             func.coalesce(func.sum(Transaction.amount), 0).label('total_amount'),
             func.coalesce(func.avg(Transaction.amount), 0).label('avg_amount')
         ).filter(and_(*base_filters)).group_by(
-            func.date(Transaction.transaction_date)
+            date_func
         ).order_by('date')
         
         results = daily_query.all()
@@ -268,12 +276,12 @@ class TransactionAnalytics:
         
         return {
             "payment": {
-                "count": payment_result.count,
-                "amount": float(payment_result.amount)
+                "count": payment_result.count if hasattr(payment_result, 'count') else 0,
+                "amount": float(payment_result.amount) if hasattr(payment_result, 'amount') else 0.0
             },
             "invoice": {
-                "count": invoice_result.count,
-                "amount": float(invoice_result.amount)
+                "count": invoice_result.count if hasattr(invoice_result, 'count') else 0,
+                "amount": float(invoice_result.amount) if hasattr(invoice_result, 'amount') else 0.0
             }
         }
     

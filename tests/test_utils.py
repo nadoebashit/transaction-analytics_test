@@ -124,6 +124,9 @@ class TestTransactionAnalytics:
                 self.successful_avg = avg
                 self.failed_count = 0
                 self.failed_amount = 0.0
+                # Add missing attributes for type breakdown tests
+                self.count = count
+                self.amount = total
         
         class MockSession:
             def query(self, *args):
@@ -265,6 +268,9 @@ class TestAnalyticsEdgeCases:
                 self.successful_avg = 0.0
                 self.failed_count = 0
                 self.failed_amount = 0.0
+                # Add missing attributes for type breakdown tests
+                self.count = 0
+                self.amount = 0.0
         
         class MockEmptySession:
             def query(self, *args):
